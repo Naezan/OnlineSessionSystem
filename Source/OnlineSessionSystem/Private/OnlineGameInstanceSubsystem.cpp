@@ -48,7 +48,7 @@ void UOnlineGameInstanceSubsystem::OnCreateSessionComplete(FName SessionName, bo
 {
 	if (bSucceeded)
 	{
-		GetWorld()->ServerTravel("/Game/ThirdPerson/Maps/ThirdPersonMap?listen");
+		//GetWorld()->ServerTravel("/Game/ThirdPerson/Maps/ThirdPersonMap?listen");
 	}
 }
 
