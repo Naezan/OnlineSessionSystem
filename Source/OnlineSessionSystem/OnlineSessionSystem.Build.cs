@@ -28,7 +28,11 @@ public class OnlineSessionSystem : ModuleRules
 				"Core",
 				"OnlineSubsystem",
 				"OnlineSubsystemSteam",
-			}
+                "OnlineSubsystemUtils",
+                "UMG",
+                "Slate",
+                "SlateCore",
+            }
 			);
 			
 		
