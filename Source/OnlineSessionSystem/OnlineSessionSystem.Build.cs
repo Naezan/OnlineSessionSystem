@@ -27,7 +27,7 @@ public class OnlineSessionSystem : ModuleRules
 			{
 				"Core",
 				"OnlineSubsystem",
-				"OnlineSubsystemSteam",
+                "OnlineSubsystemSteam",
                 "OnlineSubsystemUtils",
                 "UMG",
                 "Slate",

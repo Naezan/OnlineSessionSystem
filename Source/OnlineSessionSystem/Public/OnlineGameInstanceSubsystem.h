@@ -22,27 +22,33 @@ public:
 	UOnlineGameInstanceSubsystem();
 
 	UFUNCTION(BlueprintCallable)
-	void ShowMainMenu();
+		void ShowMainMenu();
 
 	UFUNCTION(BlueprintCallable)
-	void ShowHostMenu();
+		void ShowHostMenu();
 
 	UFUNCTION(BlueprintCallable)
-	void ShowServerMenu();
+		void ShowServerMenu();
 
 	UFUNCTION(BlueprintCallable)
-	void ShowLoadingScreen();
+		void ShowLoadingScreen();
 
 	UFUNCTION(BlueprintCallable)
-	void LaunchLobby(int32 InNumOfPlayers, bool bIsLan, FText InServerName);
+		void LaunchLobby(int32 InNumOfPlayers, bool bIsLan, FText InServerName);
 
 	UFUNCTION(BlueprintCallable)
-	void JoinServer(const FBlueprintSessionResult& SearchResult);
+		bool FindSessions(int32 MaxSessionResults, bool bIsLan);
+
+	UFUNCTION(BlueprintCallable)
+		void JoinServer(const FBlueprintSessionResult& SearchResult);
 
 	void JoinSession(const FOnlineSessionSearchResult& SearchResult);
 
 	UFUNCTION(BlueprintCallable)
-	void DestroySession();
+		void StartGame(const FString& InGameMapPath, bool bIsAbsolute);
+
+	UFUNCTION(BlueprintCallable)
+		void DestroySession();
 
 protected:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -53,26 +59,42 @@ protected:
 	virtual void OnDestroySessionComplete(FName SessionName, bool bSucceeded);
 
 protected:
-	TSharedPtr<FOnlineSessionSearch> SessionSearch;
-	IOnlineSessionPtr SessionInterface;
+	UPROPERTY()
+		TSubclassOf<UUserWidget> MainMenuWidgetClass;
+	UPROPERTY()
+		TSubclassOf<UUserWidget> HostMenuWidgetClass;
+	UPROPERTY()
+		TSubclassOf<UUserWidget> LoadingScreenWidgetClass;
+	UPROPERTY()
+		TSubclassOf<UUserWidget> ServerMenuWidgetClass;
 
-	UPROPERTY()
-	TSubclassOf<UUserWidget> MainMenuWidgetClass;
-	UPROPERTY()
-	TSubclassOf<UUserWidget> HostMenuWidgetClass;
-	UPROPERTY()
-	TSubclassOf<UUserWidget> LoadingScreenWidgetClass;
-	UPROPERTY()
-	TSubclassOf<UUserWidget> ServerMenuWidgetClass;
-	
 private:
+	IOnlineSessionPtr SessionInterface;
+	TSharedPtr<FOnlineSessionSettings> CreateSessiomSettings;
+	TSharedPtr<FOnlineSessionSearch> SessionSearch;
+
+	UPROPERTY(BlueprintReadWrite, Meta = (AllowPrivateAccess = "true"))
+		TArray<FBlueprintSessionResult> SearchSessionResults;
+
+	UPROPERTY(BlueprintReadWrite, Meta = (AllowPrivateAccess = "true"))
+		uint8 bIsFindSessionCompleted : 1;
+	UPROPERTY(BlueprintReadWrite, Meta = (AllowPrivateAccess = "true"))
+		uint8 bIsFindSessionSucceed : 1;
+
+	FOnCreateSessionCompleteDelegate CreateSessionCompleteDelegate;
+	FDelegateHandle CreateSessionCompleteDelegateHandle;
+	FOnFindSessionsCompleteDelegate FindSessionsCompleteDelegate;
+	FDelegateHandle FindSessionsCompleteDelegateHandle;
+	FOnJoinSessionCompleteDelegate JoinSessionCompleteDelegate;
+	FDelegateHandle JoinSessionCompleteDelegateHandle;
+
 	TObjectPtr<UUserWidget> MainMenuWidget;
 	TObjectPtr<UUserWidget> HostMenuWidget;
 	TObjectPtr<UUserWidget> LoadingScreenWidget;
 
 	UPROPERTY(Replicated, BlueprintReadWrite, Meta = (AllowPrivateAccess = "true"))
-	int32 NumOfPlayers;
+		int32 NumOfPlayers;
 
 	UPROPERTY(Replicated, BlueprintReadWrite, Meta = (AllowPrivateAccess = "true"))
-	FText ServerName;
+		FText ServerName;
 };

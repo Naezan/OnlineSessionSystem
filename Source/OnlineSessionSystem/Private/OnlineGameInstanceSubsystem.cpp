@@ -7,7 +7,10 @@
 #include "Net/UnrealNetwork.h"
 #include "Blueprint/UserWidget.h"
 
-UOnlineGameInstanceSubsystem::UOnlineGameInstanceSubsystem()
+UOnlineGameInstanceSubsystem::UOnlineGameInstanceSubsystem() :
+	FindSessionsCompleteDelegate(FOnFindSessionsCompleteDelegate::CreateUObject(this, &ThisClass::OnFindSessionComplete)),
+	CreateSessionCompleteDelegate(FOnCreateSessionCompleteDelegate::CreateUObject(this, &ThisClass::OnCreateSessionComplete)),
+	JoinSessionCompleteDelegate(FOnJoinSessionCompleteDelegate::CreateUObject(this, &ThisClass::OnJoinSessionComplete))
 {
 	static ConstructorHelpers::FClassFinder<UUserWidget> MainMenuClassRef(TEXT("/Script/UMGEditor.WidgetBlueprint'/OnlineSessionSystem/UI/MainMenu/WBP_MainMenu.WBP_MainMenu_C'"));
 	if (MainMenuClassRef.Class)
@@ -39,9 +42,6 @@ UOnlineGameInstanceSubsystem::UOnlineGameInstanceSubsystem()
 
 		if (SessionInterface.IsValid())
 		{
-			SessionInterface->OnCreateSessionCompleteDelegates.AddUObject(this, &UOnlineGameInstanceSubsystem::OnCreateSessionComplete);
-			SessionInterface->OnFindSessionsCompleteDelegates.AddUObject(this, &UOnlineGameInstanceSubsystem::OnFindSessionComplete);
-			SessionInterface->OnJoinSessionCompleteDelegates.AddUObject(this, &UOnlineGameInstanceSubsystem::OnJoinSessionComplete);
 			SessionInterface->OnDestroySessionCompleteDelegates.AddUObject(this, &UOnlineGameInstanceSubsystem::OnDestroySessionComplete);
 		}
 	}
@@ -54,12 +54,21 @@ void UOnlineGameInstanceSubsystem::ShowMainMenu()
 		return;
 	}
 
-	if (UGameInstance* GI = GetGameInstance())
+	UGameInstance* GI = GetGameInstance();
+	if (!GI)
 	{
-		if (APlayerController* PC = GI->GetLocalPlayerByIndex(0)->PlayerController)
+		return;
+	}
+
+	if (ULocalPlayer* LP = GI->GetLocalPlayerByIndex(0))
+	{
+		if (APlayerController* PC = LP->PlayerController)
 		{
 			MainMenuWidget = CreateWidget(PC, MainMenuWidgetClass);
 			MainMenuWidget->AddToViewport();
+			FInputModeUIOnly UIOnlyInputMode;
+			UIOnlyInputMode.SetLockMouseToViewportBehavior(EMouseLockMode::LockAlways);
+			PC->SetInputMode(UIOnlyInputMode);
 			PC->bShowMouseCursor = true;
 		}
 	}
@@ -118,21 +127,72 @@ void UOnlineGameInstanceSubsystem::ShowLoadingScreen()
 
 void UOnlineGameInstanceSubsystem::LaunchLobby(int32 InNumOfPlayers, bool bIsLan, FText InServerName)
 {
+	FNamedOnlineSession* ExistingSession = SessionInterface->GetNamedSession(NAME_GameSession);
+	if (ExistingSession != nullptr)
+	{
+		DestroySession();
+	}
+
 	NumOfPlayers = InNumOfPlayers;
 	ServerName = InServerName;
 
 	ShowLoadingScreen();
 
-	FOnlineSessionSettings Settings;
-	Settings.NumPublicConnections = NumOfPlayers;
-	Settings.bShouldAdvertise = true;
-	Settings.bAllowJoinInProgress = true;
-	Settings.bIsLANMatch = bIsLan;
-	Settings.bUsesPresence = true;
-	Settings.bAllowJoinViaPresence = true;
+	CreateSessionCompleteDelegateHandle = SessionInterface->AddOnCreateSessionCompleteDelegate_Handle(CreateSessionCompleteDelegate);
+
+	CreateSessiomSettings = MakeShareable(new FOnlineSessionSettings());
+	CreateSessiomSettings->NumPublicConnections = NumOfPlayers;
+	CreateSessiomSettings->bShouldAdvertise = true;
+	CreateSessiomSettings->bAllowJoinInProgress = true;
+	CreateSessiomSettings->bIsLANMatch = bIsLan;
+	CreateSessiomSettings->bUsesPresence = true;
+	CreateSessiomSettings->bAllowJoinViaPresence = true;
+	CreateSessiomSettings->BuildUniqueId = bIsLan ? 0 : 1;
+	CreateSessiomSettings->bUseLobbiesIfAvailable = true;
+	CreateSessiomSettings->bIsDedicated = false;
+
+	CreateSessiomSettings->Set(SETTING_MAPNAME, ServerName.ToString(), EOnlineDataAdvertisementType::ViaOnlineServiceAndPing);
 
 	const ULocalPlayer* LocalPlayer = GetWorld()->GetFirstLocalPlayerFromController();
-	SessionInterface->CreateSession(*LocalPlayer->GetPreferredUniqueNetId(), NAME_GameSession, Settings);
+	if (!SessionInterface->CreateSession(*LocalPlayer->GetPreferredUniqueNetId(), NAME_GameSession, *CreateSessiomSettings))
+	{
+		SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateSessionCompleteDelegateHandle);
+	}
+}
+
+bool UOnlineGameInstanceSubsystem::FindSessions(int32 MaxSessionResults, bool bIsLan)
+{
+	if (!SessionInterface.IsValid())
+	{
+		return false;
+	}
+
+	FindSessionsCompleteDelegateHandle = SessionInterface->AddOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegate);
+
+	SessionSearch = MakeShareable(new FOnlineSessionSearch);
+	SessionSearch->MaxSearchResults = MaxSessionResults;
+	SessionSearch->bIsLanQuery = bIsLan;
+	SessionSearch->QuerySettings.Set(SEARCH_PRESENCE, true, EOnlineComparisonOp::Equals);
+
+	bIsFindSessionCompleted = false;
+	SearchSessionResults.Empty();
+
+	const ULocalPlayer* LocalPlayer = GetWorld()->GetFirstLocalPlayerFromController();
+	if (!SessionInterface->FindSessions(*LocalPlayer->GetPreferredUniqueNetId(), SessionSearch.ToSharedRef()))
+	{
+		SessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegateHandle);
+
+		GEngine->AddOnScreenDebugMessage(
+			-1,
+			5.f,
+			FColor::Red,
+			FString(TEXT("Find to Find Sesseion!"))
+		);
+
+		return false;
+	}
+
+	return true;
 }
 
 void UOnlineGameInstanceSubsystem::JoinServer(const FBlueprintSessionResult& SearchResult)
@@ -142,10 +202,69 @@ void UOnlineGameInstanceSubsystem::JoinServer(const FBlueprintSessionResult& Sea
 
 void UOnlineGameInstanceSubsystem::JoinSession(const FOnlineSessionSearchResult& SearchResult)
 {
+	if (!SessionInterface.IsValid())
+	{
+		return;
+	}
+
 	ShowLoadingScreen();
 
+	JoinSessionCompleteDelegateHandle = SessionInterface->AddOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegate);
+
+	GEngine->AddOnScreenDebugMessage(
+		-1,
+		5.f,
+		FColor::Red,
+		FString(TEXT("JoinSession Start!"))
+	);
+
 	const ULocalPlayer* LocalPlayer = GetWorld()->GetFirstLocalPlayerFromController();
-	SessionInterface->JoinSession(*LocalPlayer->GetPreferredUniqueNetId(), NAME_GameSession, SearchResult);
+	if (!SessionInterface->JoinSession(*LocalPlayer->GetPreferredUniqueNetId(), NAME_GameSession, SearchResult))
+	{
+		SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegateHandle);
+	}
+}
+
+void UOnlineGameInstanceSubsystem::StartGame(const FString& InGameMapPath, bool bIsAbsolute)
+{
+	UWorld* World = GetWorld();
+	if (World)
+	{
+		FString PathToGame = FString::Printf(TEXT("%s?listen"), *InGameMapPath);
+		if (World->ServerTravel(PathToGame, bIsAbsolute))
+		{
+			GEngine->AddOnScreenDebugMessage(
+				-1,
+				5.f,
+				FColor::Red,
+				FString(TEXT("Success to start game!"))
+			);
+		}
+		else
+		{
+			const ETravelType TravelType = (bIsAbsolute ? TRAVEL_Absolute : TRAVEL_Relative);
+			FWorldContext& WorldContext = GEngine->GetWorldContextFromWorldChecked(World);
+
+			FURL TestURL(&WorldContext.LastURL, *PathToGame, TravelType);
+			if (TestURL.IsLocalInternal())
+			{
+				// make sure the file exists if we are opening a local file
+				if (!GEngine->MakeSureMapNameIsValid(TestURL.Map))
+				{
+					UE_LOG(LogLevel, Warning, TEXT("WARNING: The map '%s' does not exist."), *TestURL.Map);
+				}
+			}
+
+			GEngine->SetClientTravel(World, *PathToGame, TravelType);
+
+			GEngine->AddOnScreenDebugMessage(
+				-1,
+				5.f,
+				FColor::Red,
+				FString(TEXT("Failed to start game!, Try To Client Travel"))
+			);
+		}
+	}
 }
 
 void UOnlineGameInstanceSubsystem::DestroySession()
@@ -163,25 +282,109 @@ void UOnlineGameInstanceSubsystem::GetLifetimeReplicatedProps(TArray<FLifetimePr
 
 void UOnlineGameInstanceSubsystem::OnCreateSessionComplete(FName SessionName, bool bSucceeded)
 {
+	if (SessionInterface)
+	{
+		SessionInterface->ClearOnCreateSessionCompleteDelegate_Handle(CreateSessionCompleteDelegateHandle);
+	}
+
 	if (bSucceeded)
 	{
 		UWorld* World = GetWorld();
 		if (World)
 		{
 			FString PathToLobby = FString::Printf(TEXT("%s?listen"), TEXT("/OnlineSessionSystem/Game/Level/Lobby"));
-			World->ServerTravel(PathToLobby);
+			World->ServerTravel(PathToLobby, true);
 		}
+	}
+	else
+	{
+		GEngine->AddOnScreenDebugMessage(
+			-1,
+			5.f,
+			FColor::Red,
+			FString(TEXT("Failed to create session!"))
+		);
 	}
 }
 
 void UOnlineGameInstanceSubsystem::OnFindSessionComplete(bool bSucceeded)
 {
-	//@SrTODO currently not doing anything.
+	bIsFindSessionCompleted = true;
+	bIsFindSessionSucceed = bSucceeded;
+
+	if (SessionInterface)
+	{
+		SessionInterface->ClearOnFindSessionsCompleteDelegate_Handle(FindSessionsCompleteDelegateHandle);
+	}
+
+	if (bSucceeded)
+	{
+		if (SessionSearch.IsValid())
+		{
+			for (auto& Result : SessionSearch->SearchResults)
+			{
+				FBlueprintSessionResult BPResult;
+				BPResult.OnlineResult = Result;
+				SearchSessionResults.Add(BPResult);
+			}
+		}
+
+		GEngine->AddOnScreenDebugMessage(
+			-1,
+			5.f,
+			FColor::Red,
+			FString::Printf(TEXT("%d Session Found Complete!"), SearchSessionResults.Num())
+		);
+	}
+	else
+	{
+		GEngine->AddOnScreenDebugMessage(
+			-1,
+			5.f,
+			FColor::Red,
+			FString(TEXT("Find Sesseion Fail!"))
+		);
+	}
 }
 
 void UOnlineGameInstanceSubsystem::OnJoinSessionComplete(FName SessionName, EOnJoinSessionCompleteResult::Type Result)
 {
-	//@SrTODO currently not doing anything.
+	if (SessionInterface)
+	{
+		SessionInterface->ClearOnJoinSessionCompleteDelegate_Handle(JoinSessionCompleteDelegateHandle);
+	}
+
+	if (Result != EOnJoinSessionCompleteResult::Success)
+	{
+		GEngine->AddOnScreenDebugMessage(
+			-1,
+			5.f,
+			FColor::Red,
+			FString(TEXT("JoinSession Fail!"))
+		);
+		return;
+	}
+	if (Result == EOnJoinSessionCompleteResult::Success)
+	{
+		if (SessionInterface.IsValid())
+		{
+			FString Address;
+			SessionInterface->GetResolvedConnectString(NAME_GameSession, Address);
+
+			APlayerController* PlayerController = GetGameInstance()->GetFirstLocalPlayerController();
+			if (PlayerController)
+			{
+				PlayerController->ClientTravel(Address, ETravelType::TRAVEL_Absolute);
+			}
+		}
+
+		GEngine->AddOnScreenDebugMessage(
+			-1,
+			5.f,
+			FColor::Red,
+			FString(TEXT("JoinSession Success!"))
+		);
+	}
 }
 
 void UOnlineGameInstanceSubsystem::OnDestroySessionComplete(FName SessionName, bool bSucceeded)
